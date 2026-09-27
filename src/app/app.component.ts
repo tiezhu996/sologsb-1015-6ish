@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, HostListener, computed, inject } from '@angular/core';
+import { ChangeDetectionStrategy, Component, HostListener, computed, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { NzAlertModule } from 'ng-zorro-antd/alert';
@@ -40,7 +40,10 @@ import { METER_TEMPLATES, PoetryStoreService } from './services/poetry-store.ser
 export class AppComponent {
   readonly store = inject(PoetryStoreService);
   readonly templates = METER_TEMPLATES;
+  readonly activeTab = signal(0);
   readonly selectedCell = computed(() => this.store.selectedCell());
+  readonly pauseIssues = computed(() => this.store.pauseIssues());
+  readonly nonPauseIssues = computed(() => this.store.issues().filter((issue) => issue.kind !== 'pause'));
 
   get totalErrors(): number {
     return this.store.issues().filter((issue) => issue.level === 'error').length;
@@ -48,6 +51,14 @@ export class AppComponent {
 
   get totalWarnings(): number {
     return this.store.issues().filter((issue) => issue.level === 'warning').length;
+  }
+
+  get pauseMissing(): number {
+    return this.store.pauseSummary().missing;
+  }
+
+  get pauseOverrun(): number {
+    return this.store.pauseSummary().overrun;
   }
 
   get checkedRate(): number {
@@ -70,6 +81,13 @@ export class AppComponent {
 
   trackTemplate(index: number, item: (typeof METER_TEMPLATES)[number]): string {
     return item.id;
+  }
+
+  /** 从检查结果点回逐字标注页的原句原字。 */
+  locateIssue(line: number | undefined, position: number | undefined): void {
+    if (line === undefined) return;
+    this.store.selectCell(line, position ?? 0);
+    this.activeTab.set(0);
   }
 
   @HostListener('document:keydown', ['$event'])
