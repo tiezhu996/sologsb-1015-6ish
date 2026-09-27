@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, HostListener, computed, inject } from '@angular/core';
+import { ChangeDetectionStrategy, Component, HostListener, computed, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { NzAlertModule } from 'ng-zorro-antd/alert';
@@ -14,6 +14,7 @@ import { NzTabsModule } from 'ng-zorro-antd/tabs';
 import { NzTagModule } from 'ng-zorro-antd/tag';
 import { NzToolTipModule } from 'ng-zorro-antd/tooltip';
 import { METER_TEMPLATES, PoetryStoreService } from './services/poetry-store.service';
+import type { PoemIssue } from './models/poem.models';
 
 @Component({
   selector: 'app-root',
@@ -41,13 +42,35 @@ export class AppComponent {
   readonly store = inject(PoetryStoreService);
   readonly templates = METER_TEMPLATES;
   readonly selectedCell = computed(() => this.store.selectedCell());
+  readonly activeTabIndex = signal(0);
 
   get totalErrors(): number {
-    return this.store.issues().filter((issue) => issue.level === 'error').length;
+    return this.store.issues().filter((issue) => issue.category === 'meter' && issue.level === 'error').length;
   }
 
   get totalWarnings(): number {
-    return this.store.issues().filter((issue) => issue.level === 'warning').length;
+    return this.store.issues().filter((issue) => issue.level === 'warning' && issue.category !== 'pause').length;
+  }
+
+  get pauseMissingCount(): number {
+    return this.store.issues().filter((issue) => issue.category === 'pause' && issue.level === 'error').length;
+  }
+
+  get pauseOffsideCount(): number {
+    return this.store.issues().filter((issue) => issue.category === 'pause' && issue.level === 'warning').length;
+  }
+
+  issueSymbol(issue: PoemIssue): string {
+    if (issue.title === '缺句读') return '缺';
+    if (issue.title === '停顿越位') return '越';
+    return issue.level === 'error' ? '出' : issue.level === 'warning' ? '核' : '合';
+  }
+
+  /** 从检查结果点回逐字标注页的对应字格 */
+  focusIssue(issue: PoemIssue): void {
+    if (issue.line === undefined) return;
+    this.store.selectCell(issue.line, issue.position ?? 0);
+    this.activeTabIndex.set(0);
   }
 
   get checkedRate(): number {

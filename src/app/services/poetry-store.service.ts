@@ -7,6 +7,7 @@ import type {
   CharDiff,
   MarkTone,
   MeterTemplate,
+  PauseStatus,
   PoemIssue,
   PoemVersion,
   PoemWorkspace,
@@ -70,6 +71,32 @@ function key(line: number, position: number): string {
 
 function defaultMark(): CharacterMark {
   return { tone: '?', rhyme: '', pauseAfter: false, basis: '', note: '' };
+}
+
+/** 模板节奏点（零基字位）：五言在第二字后，七言在第二、第四字后 */
+function rhythmPositions(template: MeterTemplate): number[] {
+  if (template.lineLength === 5) return [1];
+  if (template.lineLength === 7) return [1, 3];
+  return [];
+}
+
+/** 停顿句读判定：只看停顿标记与节奏点，与平仄是否已标无关；句末自然收束不计越位 */
+function pauseStatusOf(mark: CharacterMark, position: number, lineLength: number, rhythmPoints: number[]): { status: PauseStatus; message: string } {
+  const isRhythmPoint = rhythmPoints.includes(position);
+  const isLineEnd = position === lineLength - 1;
+  if (isRhythmPoint && mark.pauseAfter) {
+    return { status: 'ok', message: `第 ${position + 1} 字为节奏点，停顿已标` };
+  }
+  if (isRhythmPoint) {
+    return { status: 'missing', message: `第 ${position + 1} 字后按律应有停顿，尚未标记（缺句读）` };
+  }
+  if (mark.pauseAfter && !isLineEnd) {
+    return { status: 'offside', message: `第 ${position + 1} 字后非节奏点，不该停而停（停顿越位）` };
+  }
+  if (mark.pauseAfter && isLineEnd) {
+    return { status: 'none', message: '句末自然收束，不计越位' };
+  }
+  return { status: 'none', message: '' };
 }
 
 function initialWorkspace(): PoemWorkspace {
@@ -154,6 +181,7 @@ export class PoetryStoreService {
   readonly analysis = computed<AnalysisLine[]>(() => {
     const version = this.activeVersion();
     const template = this.template();
+    const rhythmPoints = rhythmPositions(template);
     return this.lines().map((line, lineIndex) => {
       const chars = Array.from(line).filter((char) => !PUNCTUATION.has(char));
       const cells: AnalysisCell[] = chars.map((char, position) => {
@@ -180,7 +208,8 @@ export class PoetryStoreService {
           status = 'error';
           message = `此处应为${expected}声`;
         }
-        return { char, position, expected, actual, status, message, mark };
+        const pause = pauseStatusOf(mark, position, chars.length, rhythmPoints);
+        return { char, position, expected, actual, status, message, pauseStatus: pause.status, pauseMessage: pause.message, mark };
       });
       const rhymeChars = template.rhymeLines.includes(lineIndex) ? cells.slice(-1).map((cell) => cell.char) : [];
       return {
@@ -189,6 +218,7 @@ export class PoetryStoreService {
         rhymeChars,
         errors: cells.filter((cell) => cell.status === 'error').length,
         variants: cells.filter((cell) => cell.status === 'variant').length,
+        pauseIssues: cells.filter((cell) => cell.pauseStatus === 'missing' || cell.pauseStatus === 'offside').length,
       };
     });
   });
@@ -203,35 +233,55 @@ export class PoetryStoreService {
         issues.push({
           id: uid('issue'),
           level: 'error',
+          category: 'meter',
           title: '出律位置',
           detail: `第 ${line.index + 1} 句“${cell.char}”：${cell.message}`,
           line: line.index,
           position: cell.position,
         });
       });
+      line.cells.filter((cell) => cell.pauseStatus === 'missing' || cell.pauseStatus === 'offside').forEach((cell) => {
+        const missing = cell.pauseStatus === 'missing';
+        issues.push({
+          id: uid('issue'),
+          level: missing ? 'error' : 'warning',
+          category: 'pause',
+          title: missing ? '缺句读' : '停顿越位',
+          detail: missing
+            ? `第 ${line.index + 1} 句第 ${cell.position + 1} 字“${cell.char}”后按${template.lineLength}言节奏应有停顿，尚未标记。`
+            : `第 ${line.index + 1} 句第 ${cell.position + 1} 字“${cell.char}”后非节奏点，不该停而停。`,
+          line: line.index,
+          position: cell.position,
+        });
+      });
       if (line.cells.some((cell) => cell.status === 'unknown')) {
-        issues.push({ id: uid('issue'), level: 'warning', title: '存在未标注字', detail: `第 ${line.index + 1} 句仍有平仄未确认。`, line: line.index });
+        issues.push({ id: uid('issue'), level: 'warning', category: 'meter', title: '存在未标注字', detail: `第 ${line.index + 1} 句仍有平仄未确认。`, line: line.index });
       }
     });
     const rhymeCells = template.rhymeLines.map((line) => analysis[line]?.cells.at(-1)).filter(Boolean);
     const rhymeGroups = new Map<string, string[]>();
     rhymeCells.forEach((cell) => {
       if (!cell?.mark.rhyme) {
-        issues.push({ id: uid('issue'), level: 'warning', title: '韵脚缺少韵部', detail: `第 ${(cell?.position ?? 0) + 1} 句末字尚未指定韵部。` });
+        issues.push({ id: uid('issue'), level: 'warning', category: 'other', title: '韵脚缺少韵部', detail: `第 ${(cell?.position ?? 0) + 1} 句末字尚未指定韵部。` });
         return;
       }
       rhymeGroups.set(cell.mark.rhyme, [...(rhymeGroups.get(cell.mark.rhyme) ?? []), cell.char]);
     });
     rhymeGroups.forEach((chars, rhyme) => {
       const duplicate = chars.find((char, index) => chars.indexOf(char) !== index);
-      if (duplicate) issues.push({ id: uid('issue'), level: 'warning', title: '重复用韵', detail: `韵部 ${rhyme} 重复使用末字“${duplicate}”。` });
+      if (duplicate) issues.push({ id: uid('issue'), level: 'warning', category: 'other', title: '重复用韵', detail: `韵部 ${rhyme} 重复使用末字“${duplicate}”。` });
     });
     if (version.antithesisPairs.length === 0) {
-      issues.push({ id: 'antithesis-empty', level: 'info', title: '尚未标记对仗', detail: '可在检视器中把两句建立对仗关系。' });
+      issues.push({ id: 'antithesis-empty', level: 'info', category: 'other', title: '尚未标记对仗', detail: '可在检视器中把两句建立对仗关系。' });
     }
-    if (!issues.some((issue) => issue.level === 'error')) {
-      issues.unshift({ id: 'meter-ok', level: 'info', title: '格律检查通过', detail: '当前未发现硬性出律，请继续核对可接受变体。' });
+    const passed: PoemIssue[] = [];
+    if (!issues.some((issue) => issue.category === 'meter' && issue.level === 'error')) {
+      passed.push({ id: 'meter-ok', level: 'info', category: 'other', title: '格律检查通过', detail: '当前未发现硬性出律，请继续核对可接受变体。' });
     }
+    if (!issues.some((issue) => issue.category === 'pause')) {
+      passed.push({ id: 'pause-ok', level: 'info', category: 'other', title: '句读检查通过', detail: '各句节奏点停顿均已标记，未发现越位停顿。' });
+    }
+    issues.unshift(...passed);
     return issues;
   });
 
@@ -390,12 +440,47 @@ export class PoetryStoreService {
 
   exportProofreadCopy(): string {
     const active = this.activeVersion();
+    const template = this.template();
     const lines = this.analysis().map((line) => {
       const tags = line.cells.map((cell) => `${cell.char}${cell.actual === '?' ? '□' : `(${cell.actual})`}`).join(' ');
       return `第 ${line.index + 1} 句：${tags}`;
     });
     const notes = this.issues().map((issue) => `[${issue.level.toUpperCase()}] ${issue.title}：${issue.detail}`);
-    return [`# ${this.workspace().title} · 格律校对稿`, '', `底本：${active.name}`, `出处：${active.source}`, '', '## 字音标注', ...lines, '', '## 检查记录', ...notes].join('\n');
+    return [
+      `# ${this.workspace().title} · 格律校对稿`, '',
+      `底本：${active.name}`, `出处：${active.source}`, '',
+      '## 字音标注', ...lines, '',
+      ...this.pauseExport(template), '',
+      '## 检查记录', ...notes,
+    ].join('\n');
+  }
+
+  /** 停顿句读小节：节奏规则、逐句停顿标注（／＝已标停顿）与停顿问题定位 */
+  private pauseExport(template: MeterTemplate): string[] {
+    const rule = template.lineLength === 5
+      ? '五言：第二字后应有停顿'
+      : template.lineLength === 7
+        ? '七言：第二、第四字后应有停顿'
+        : '当前模板无固定节奏点';
+    const section = ['## 停顿句读', '', `节奏规则：${rule}（句末自然收束不计越位）`, ''];
+    this.analysis().forEach((line) => {
+      const text = line.cells.map((cell) => {
+        let mark = cell.mark.pauseAfter ? '／' : '';
+        if (cell.pauseStatus === 'missing') mark += '〔缺句读〕';
+        if (cell.pauseStatus === 'offside') mark += '〔越位〕';
+        return cell.char + mark;
+      }).join('');
+      section.push(`第 ${line.index + 1} 句：${text}`);
+    });
+    section.push('');
+    const pauseIssues = this.issues().filter((issue) => issue.category === 'pause');
+    if (pauseIssues.length) {
+      section.push('停顿问题：');
+      pauseIssues.forEach((issue) => section.push(`- ${issue.title}：${issue.detail}`));
+    } else {
+      section.push('停顿问题：无，各句节奏点停顿齐备。');
+    }
+    return section;
   }
 
   downloadProofreadCopy(): void {

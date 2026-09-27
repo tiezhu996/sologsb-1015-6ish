@@ -40,12 +40,14 @@
     </nz-select>
     <div class="issue-pills">
       <nz-tag nzColor="error">{{ totalErrors }} 处出律</nz-tag>
+      <nz-tag nzColor="volcano">{{ pauseMissingCount }} 处缺句读</nz-tag>
+      <nz-tag nzColor="gold">{{ pauseOffsideCount }} 处停顿越位</nz-tag>
       <nz-tag nzColor="warning">{{ totalWarnings }} 处待核</nz-tag>
       <nz-tag>{{ store.differences().length }} 处异文</nz-tag>
     </div>
   </section>
 
-  <nz-tabset nzType="line" class="main-tabs">
+  <nz-tabset nzType="line" class="main-tabs" [(nzSelectedIndex)]="activeTabIndex">
     <nz-tab nzTitle="逐字标注">
       <div class="meter-workbench">
         <aside class="source-panel surface">
@@ -88,6 +90,8 @@
               <span class="legend-dot variant"></span>可接受
               <span class="legend-dot error"></span>出律
               <span class="legend-dot unknown"></span>待标
+              <span class="legend-dot pause-missing"></span>缺句读
+              <span class="legend-dot pause-offside"></span>越位
             </div>
           </div>
           <div class="meter-lines">
@@ -95,7 +99,7 @@
               <article class="meter-line" [class.is-rhyme-line]="store.template().rhymeLines.includes(line.index)">
                 <div class="line-label">
                   <strong>第 {{ line.index + 1 }} 句</strong>
-                  <small>{{ line.errors }} 出律 · {{ line.variants }} 变体</small>
+                  <small>{{ line.errors }} 出律 · {{ line.variants }} 变体 · {{ line.pauseIssues }} 句读问题</small>
                 </div>
                 <div class="character-row">
                   @for (cell of line.cells; track cell.position) {
@@ -106,15 +110,23 @@
                       [class.is-variant]="cell.status === 'variant'"
                       [class.is-error]="cell.status === 'error'"
                       [class.is-unknown]="cell.status === 'unknown'"
+                      [class.is-pause-missing]="cell.pauseStatus === 'missing'"
+                      [class.is-pause-offside]="cell.pauseStatus === 'offside'"
                       nz-tooltip
-                      [nzTooltipTitle]="cell.message"
+                      [nzTooltipTitle]="cell.pauseMessage ? cell.message + '；' + cell.pauseMessage : cell.message"
                       (click)="store.selectCell(line.index, cell.position)"
                     >
                       <span class="expected">{{ cell.expected }}／{{ cell.actual }}</span>
                       <span class="hanzi">{{ cell.char }}</span>
                       <span class="mark-row">
                         @if (cell.mark.rhyme) { <em>{{ cell.mark.rhyme }}</em> }
-                        @if (cell.mark.pauseAfter) { <i>顿</i> }
+                        @if (cell.pauseStatus === 'missing') {
+                          <i class="pause-badge missing">缺读</i>
+                        } @else if (cell.pauseStatus === 'offside') {
+                          <i class="pause-badge offside">越位</i>
+                        } @else if (cell.mark.pauseAfter) {
+                          <i>顿</i>
+                        }
                       </span>
                     </button>
                   }
@@ -127,7 +139,7 @@
           </div>
           <div class="meter-footer">
             <span>模板：{{ store.template().summary }}</span>
-            <span>一三五位置可判为可接受变体；韵脚重复单独提示。</span>
+            <span>一三五位置可判为可接受变体；五言节奏点在第二字后、七言在第二与第四字后，句末收束不计越位。</span>
           </div>
         </main>
 
@@ -158,6 +170,13 @@
               <nz-switch [ngModel]="cell.mark.pauseAfter" (ngModelChange)="store.setMark({ pauseAfter: $event })"></nz-switch>
               <span>此字后标记停顿</span>
             </div>
+            @if (cell.pauseMessage) {
+              <small
+                class="pause-hint"
+                [class.is-missing]="cell.pauseStatus === 'missing'"
+                [class.is-offside]="cell.pauseStatus === 'offside'"
+              >{{ cell.pauseMessage }}</small>
+            }
             <label class="field-label">韵组</label>
             <input nz-input placeholder="如 A、下平八庚" [ngModel]="cell.mark.rhyme" (ngModelChange)="store.setMark({ rhyme: $event })" />
             <label class="field-label">判断依据</label>
@@ -199,11 +218,14 @@
                 [class.level-error]="issue.level === 'error'"
                 [class.level-warning]="issue.level === 'warning'"
                 [class.level-info]="issue.level === 'info'"
-                (click)="issue.line !== undefined && store.selectCell(issue.line, issue.position || 0)"
+                [class.is-pause-issue]="issue.category === 'pause'"
+                (click)="focusIssue(issue)"
               >
-                <span class="issue-symbol">{{ issue.level === 'error' ? '出' : issue.level === 'warning' ? '核' : '合' }}</span>
+                <span class="issue-symbol">{{ issueSymbol(issue) }}</span>
                 <span><strong>{{ issue.title }}</strong><small>{{ issue.detail }}</small></span>
-                @if (issue.line !== undefined) { <em>定位第 {{ issue.line + 1 }} 句</em> }
+                @if (issue.line !== undefined) {
+                  <em>定位第 {{ issue.line + 1 }} 句@if (issue.position !== undefined) { 第 {{ issue.position + 1 }} 字}</em>
+                }
               </button>
             }
           </div>
@@ -304,7 +326,7 @@
         <aside class="surface export-panel">
           <span class="overline">PROOFREAD EXPORT</span>
           <h2>导出校对稿</h2>
-          <p>包含逐字平仄、韵组、判断依据、出律提示与对仗记录。</p>
+          <p>包含逐字平仄、韵组、判断依据、出律提示、停顿句读位置与对仗记录。</p>
           <button nz-button nzType="primary" nzSize="large" nzBlock (click)="store.downloadProofreadCopy()">导出 Markdown 校对稿</button>
           <nz-divider></nz-divider>
           <label class="field-label">当前底本说明</label>
